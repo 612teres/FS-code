@@ -1,3 +1,4 @@
+#This is a simple ide
 import tkinter as tk
 from tkinter import scrolledtext
 import subprocess
