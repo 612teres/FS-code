@@ -48,8 +48,8 @@ clear_button.pack(side=tk.LEFT)
 # Create a menu bar
 menubar = tk.Menu(window)
 filemenu = tk.Menu(menubar, tearoff=0)
-filemenu.add_command(label="Open")  # You'll need to implement the open functionality
-filemenu.add_command(label="Save")  # You'll need to implement the save functionality
+filemenu.add_command(label="Open")  # You'll need to implement the open functionality here
+filemenu.add_command(label="Save")  # You'll need to implement the save functionality and here too
 filemenu.add_separator()
 filemenu.add_command(label="Exit", command=window.quit)
 menubar.add_cascade(label="File", menu=filemenu)
