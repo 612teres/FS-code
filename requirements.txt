@@ -1,0 +1,11 @@
+# FS-Code Requirements
+# Python IDE with modern UI
+
+# Core dependencies (all included with Python standard library)
+# tkinter (included with Python)
+# subprocess (included with Python)
+# re (included with Python)
+# pathlib (included with Python)
+
+# No additional dependencies required for basic functionality
+# Python 3.7+ recommended for best compatibility
