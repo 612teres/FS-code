@@ -117,13 +117,15 @@ class SyntaxHighlightedText(tk.Text):
 
 
 class Terminal(tk.Frame):
-    """Terminal widget for running shell commands"""
+    """Terminal widget for running shell commands with Linux support"""
     
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
         self.command_history = []
         self.history_index = -1
         self.current_directory = Path.cwd()
+        self.shell = self._detect_linux_shell()
+        self.is_windows = os.name == 'nt'
         
         # Create terminal header
         header = tk.Frame(self, bg="#2d2d30", height=30)
@@ -177,9 +179,48 @@ class Terminal(tk.Frame):
         self.input_entry.bind("<Down>", self._history_down)
         
         # Show initial prompt
+        shell_info = f"Using: {self.shell['name']}" if self.shell else "Using: Default shell"
         self._write_output(f"Terminal ready. Current directory: {self.current_directory}\n", "info")
+        self._write_output(f"{shell_info}\n", "info")
         self._write_output("Type 'help' for available commands.\n\n", "info")
         self._show_prompt()
+    
+    def _detect_linux_shell(self):
+        """Detect available Linux-compatible shell on Windows"""
+        if os.name != 'nt':
+            # Already on Linux/Unix
+            return {'name': 'bash', 'command': ['bash', '-c'], 'available': True}
+        
+        # Check for WSL
+        try:
+            result = subprocess.run(['wsl', '--list', '--quiet'], 
+                                  capture_output=True, timeout=2)
+            if result.returncode == 0:
+                return {'name': 'WSL', 'command': ['wsl'], 'available': True}
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        
+        # Check for Git Bash
+        git_bash_paths = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+        ]
+        for path in git_bash_paths:
+            if os.path.exists(path):
+                return {'name': 'Git Bash', 'command': [path], 'available': True}
+        
+        # Check for MSYS2
+        msys2_paths = [
+            r"C:\msys64\usr\bin\bash.exe",
+            r"C:\msys32\usr\bin\bash.exe",
+        ]
+        for path in msys2_paths:
+            if os.path.exists(path):
+                return {'name': 'MSYS2', 'command': [path], 'available': True}
+        
+        # No Linux shell found, will use command mapping
+        return {'name': 'Windows CMD (with Linux command mapping)', 'command': None, 'available': False}
     
     def _write_output(self, text, tag="normal"):
         """Write text to terminal output"""
@@ -224,29 +265,97 @@ class Terminal(tk.Frame):
             # Execute system command
             self._run_command(command)
     
+    def _map_linux_command(self, command):
+        """Map Linux commands to Windows equivalents if no Linux shell is available"""
+        if self.shell and self.shell['available']:
+            return command  # Use Linux shell directly
+        
+        # Command mapping for Windows
+        cmd_parts = command.split()
+        if not cmd_parts:
+            return command
+        
+        cmd = cmd_parts[0].lower()
+        args = ' '.join(cmd_parts[1:]) if len(cmd_parts) > 1 else ''
+        
+        # Map common Linux commands to Windows
+        command_map = {
+            'ls': f'dir /b {args}' if args else 'dir /b',
+            'll': f'dir {args}' if args else 'dir',
+            'pwd': 'cd',
+            'cat': f'type {args}' if args else 'type',
+            'grep': f'findstr {args}' if args else 'findstr',
+            'which': f'where {args}' if args else 'where',
+            'rm': f'del {args}' if args else 'del',
+            'rmdir': f'rmdir {args}' if args else 'rmdir',
+            'mv': f'move {args}' if args else 'move',
+            'cp': f'copy {args}' if args else 'copy',
+            'touch': f'type nul > {args}' if args else 'type nul',
+            'clear': 'cls',
+        }
+        
+        if cmd in command_map:
+            return command_map[cmd]
+        return command
+    
     def _run_command(self, command):
-        """Run a system command"""
+        """Run a system command with Linux support"""
         try:
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=str(self.current_directory),
-            )
-            stdout, stderr = process.communicate(timeout=10)
+            # Map Linux commands if needed
+            if self.is_windows and (not self.shell or not self.shell['available']):
+                command = self._map_linux_command(command)
+            
+            # Use Linux shell if available
+            if self.shell and self.shell['available']:
+                if self.shell['name'] == 'WSL':
+                    # WSL command
+                    full_command = self.shell['command'] + ['bash', '-c', 
+                        f"cd '{self.current_directory}' && {command}"]
+                elif 'bash' in self.shell['name'].lower():
+                    # Git Bash or MSYS2
+                    full_command = self.shell['command'] + ['-c', 
+                        f"cd '{self.current_directory}' && {command}"]
+                else:
+                    full_command = command
+                    shell = True
+            else:
+                full_command = command
+                shell = True
+            
+            # Execute command
+            if self.shell and self.shell['available']:
+                process = subprocess.Popen(
+                    full_command,
+                    shell=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            else:
+                process = subprocess.Popen(
+                    full_command,
+                    shell=shell,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    cwd=str(self.current_directory),
+                )
+            
+            stdout, stderr = process.communicate(timeout=30)
             
             if stdout:
                 self._write_output(stdout, "output")
             if stderr:
                 self._write_output(stderr, "error")
             
-            if not stdout and not stderr:
-                self._write_output(f"Command executed (exit code: {process.returncode})\n", "info")
+            if not stdout and not stderr and process.returncode == 0:
+                # Command succeeded silently
+                pass
+            elif process.returncode != 0:
+                self._write_output(f"Command failed with exit code: {process.returncode}\n", "error")
         except subprocess.TimeoutExpired:
             process.kill()
-            self._write_output("Command timed out after 10 seconds.\n", "error")
+            self._write_output("Command timed out after 30 seconds.\n", "error")
         except Exception as e:
             self._write_output(f"Error: {str(e)}\n", "error")
         
@@ -269,19 +378,37 @@ class Terminal(tk.Frame):
     
     def _show_help(self):
         """Show help message"""
-        help_text = """
+        shell_note = ""
+        if self.shell and self.shell['available']:
+            shell_note = f"\nNote: Using {self.shell['name']} - Linux commands are supported!\n"
+        elif self.is_windows:
+            shell_note = "\nNote: Linux commands will be automatically mapped to Windows equivalents.\n"
+        
+        help_text = f"""
 Available commands:
   help              - Show this help message
   clear / cls       - Clear terminal output
   cd <path>         - Change directory
   <command>         - Execute any system command
+{shell_note}
+Linux Commands (auto-mapped on Windows if no Linux shell):
+  ls, ll            - List directory
+  pwd               - Print working directory
+  cat <file>        - Display file contents
+  grep <pattern>    - Search for pattern
+  which <cmd>       - Find command location
+  rm <file>         - Remove file
+  mv <src> <dst>    - Move/rename file
+  cp <src> <dst>    - Copy file
+  touch <file>      - Create empty file
 
 Examples:
   cd Documents      - Change to Documents folder
+  ls                - List directory (Linux-style)
   dir               - List directory (Windows)
-  ls                - List directory (Linux/Mac)
   python --version  - Check Python version
   pip list          - List installed packages
+  cat app.py        - View file contents
 """
         self._write_output(help_text, "info")
         self._show_prompt()
@@ -1009,14 +1136,16 @@ class FSCodeIDE(tk.Tk):
         self.horizontal_paned.pack(fill=tk.BOTH, expand=True)
         
         # Terminal sidebar (initially hidden)
-        self.terminal_frame = ttk.Frame(self.horizontal_paned, width=0)
-        self.terminal = Terminal(self.terminal_frame, width=350)
+        self.terminal_frame = ttk.Frame(self.horizontal_paned, width=350)
+        self.terminal = Terminal(self.terminal_frame)
         self.terminal.pack(fill=tk.BOTH, expand=True)
         self.terminal_frame.pack_propagate(False)
         
         # Main content area
         self.content_frame = ttk.Frame(self.horizontal_paned)
-        self.content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Add content frame to paned window first (terminal hidden initially)
+        self.horizontal_paned.add(self.content_frame, weight=1)
         
         # Vertical paned window for editor and output
         self.paned = ttk.Panedwindow(self.content_frame, orient=tk.VERTICAL)
@@ -1201,14 +1330,38 @@ class FSCodeIDE(tk.Tk):
     
     def toggle_terminal(self) -> None:
         """Toggle terminal sidebar visibility"""
-        if self.terminal_visible:
+        # Get current panes
+        try:
+            panes = list(self.horizontal_paned.panes())
+        except:
+            panes = []
+        
+        terminal_in_panes = self.terminal_frame in panes
+        content_in_panes = self.content_frame in panes
+        
+        if self.terminal_visible and terminal_in_panes:
             # Hide terminal
-            self.horizontal_paned.forget(self.terminal_frame)
+            try:
+                self.horizontal_paned.forget(self.terminal_frame)
+            except tk.TclError:
+                pass
             self.terminal_visible = False
-        else:
-            # Show terminal - set width before adding
-            self.terminal_frame.configure(width=350)
-            self.horizontal_paned.add(self.terminal_frame, weight=0)
+        elif not self.terminal_visible and not terminal_in_panes:
+            # Show terminal - need to reorder panes
+            try:
+                # Remove content frame if it's in panes
+                if content_in_panes:
+                    self.horizontal_paned.forget(self.content_frame)
+                # Add terminal first, then content
+                self.horizontal_paned.add(self.terminal_frame, weight=0)
+                if content_in_panes:
+                    self.horizontal_paned.add(self.content_frame, weight=1)
+            except tk.TclError as e:
+                # If there's an error, try simpler approach
+                try:
+                    self.horizontal_paned.add(self.terminal_frame, weight=0)
+                except:
+                    pass
             self.terminal_visible = True
 
     def update_font(self) -> None:
