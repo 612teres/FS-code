@@ -298,47 +298,69 @@ class Terminal(tk.Frame):
             return command_map[cmd]
         return command
     
+    def _convert_windows_path_to_wsl(self, path):
+        """Convert Windows path to WSL path format"""
+        # Convert C:\Users\Admin\Documents to /mnt/c/Users/Admin/Documents
+        path_str = str(path).replace('\\', '/')
+        if ':' in path_str:
+            drive_letter = path_str[0].lower()
+            path_str = path_str[2:]  # Remove C:
+            return f"/mnt/{drive_letter}{path_str}"
+        return path_str
+    
     def _run_command(self, command):
         """Run a system command with Linux support"""
         try:
-            # Map Linux commands if needed
-            if self.is_windows and (not self.shell or not self.shell['available']):
-                command = self._map_linux_command(command)
-            
             # Use Linux shell if available
             if self.shell and self.shell['available']:
                 if self.shell['name'] == 'WSL':
-                    # WSL command
-                    full_command = self.shell['command'] + ['bash', '-c', 
-                        f"cd '{self.current_directory}' && {command}"]
+                    # Convert Windows path to WSL path
+                    wsl_path = self._convert_windows_path_to_wsl(self.current_directory)
+                    # Escape the command properly for bash
+                    # Replace single quotes with '\'' and wrap the whole thing
+                    escaped_command = command.replace("'", "'\\''")
+                    # Build the full bash command with cd
+                    bash_cmd = f"cd '{wsl_path}' && {escaped_command}"
+                    full_command = ['wsl', 'bash', '-c', bash_cmd]
                 elif 'bash' in self.shell['name'].lower():
-                    # Git Bash or MSYS2
+                    # Git Bash or MSYS2 - convert Windows path
+                    bash_path = str(self.current_directory).replace('\\', '/')
+                    # Git Bash uses /c/Users format, MSYS2 uses /c/Users
+                    if 'C:' in bash_path or 'c:' in bash_path:
+                        bash_path = bash_path.replace('C:', '/c').replace('c:', '/c')
+                    elif 'D:' in bash_path or 'd:' in bash_path:
+                        bash_path = bash_path.replace('D:', '/d').replace('d:', '/d')
                     full_command = self.shell['command'] + ['-c', 
-                        f"cd '{self.current_directory}' && {command}"]
+                        f"cd '{bash_path}' && {command}"]
                 else:
                     full_command = command
                     shell = True
-            else:
-                full_command = command
-                shell = True
-            
-            # Execute command
-            if self.shell and self.shell['available']:
+                
+                # Execute with Linux shell
                 process = subprocess.Popen(
                     full_command,
                     shell=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    encoding='utf-8',
+                    errors='replace',
                 )
             else:
+                # Map Linux commands if needed (no Linux shell available)
+                if self.is_windows:
+                    command = self._map_linux_command(command)
+                
+                # Execute with Windows shell
                 process = subprocess.Popen(
-                    full_command,
-                    shell=shell,
+                    command,
+                    shell=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                     cwd=str(self.current_directory),
+                    encoding='utf-8',
+                    errors='replace',
                 )
             
             stdout, stderr = process.communicate(timeout=30)
@@ -346,15 +368,17 @@ class Terminal(tk.Frame):
             if stdout:
                 self._write_output(stdout, "output")
             if stderr:
-                self._write_output(stderr, "error")
+                # Only show stderr if it's not empty and not just a warning
+                if stderr.strip() and not stderr.strip().startswith('W'):
+                    self._write_output(stderr, "error")
             
-            if not stdout and not stderr and process.returncode == 0:
-                # Command succeeded silently
-                pass
-            elif process.returncode != 0:
-                self._write_output(f"Command failed with exit code: {process.returncode}\n", "error")
+            if process.returncode != 0 and stderr.strip():
+                # Only show error if there's actual error output
+                if not stderr.strip().startswith('W'):
+                    self._write_output(f"Command failed with exit code: {process.returncode}\n", "error")
         except subprocess.TimeoutExpired:
-            process.kill()
+            if 'process' in locals():
+                process.kill()
             self._write_output("Command timed out after 30 seconds.\n", "error")
         except Exception as e:
             self._write_output(f"Error: {str(e)}\n", "error")
