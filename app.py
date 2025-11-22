@@ -1,8 +1,3 @@
-"""
-FS-Code: A Modern Python IDE
-Built with Tkinter featuring syntax highlighting, tabbed interface, and modern UI
-"""
-
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox, font
 import subprocess
@@ -12,8 +7,6 @@ from pathlib import Path
 
 
 class SyntaxHighlightedText(tk.Text):
-    """Text widget with Python syntax highlighting"""
-    
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
         
@@ -82,15 +75,40 @@ class SyntaxHighlightedText(tk.Text):
         return "break"  # Prevent default handler
 
 
+class AutoHideScrollbar(ttk.Scrollbar):
+    """Completely hidden scrollbar - still functional but invisible"""
+    
+    def __init__(self, parent, text_widget=None, **kwargs):
+        super().__init__(parent, **kwargs)
+        # Hide permanently - scrollbars are invisible but still functional
+        self.grid_remove()
+    
+    def grid(self, **kwargs):
+        """Override grid to keep scrollbar hidden"""
+        # Never actually show the scrollbar
+        pass
+    
+    def grid_remove(self):
+        """Keep scrollbar hidden"""
+        super().grid_remove()
+
+
 class LineNumbers(tk.Canvas):
     """Line number widget for the text editor"""
     
     def __init__(self, parent, text_widget, **kwargs):
         super().__init__(parent, **kwargs)
         self.text_widget = text_widget
+        self.line_color = "#858585"  # Default color
+        
+    def set_line_color(self, color: str) -> None:
+        """Set the color for line numbers"""
+        self.line_color = color
         
     def redraw(self, *args):
         """Redraw line numbers"""
+        if not self.text_widget:
+            return
         self.delete("all")
         
         i = self.text_widget.index("@0,0")
@@ -100,7 +118,17 @@ class LineNumbers(tk.Canvas):
                 break
             y = dline[1]
             linenum = str(i).split(".")[0]
-            self.create_text(2, y, anchor="nw", text=linenum, fill="#858585", font=("Consolas", 10))
+            # Get font size from text widget if available
+            font_size = 10
+            if hasattr(self.text_widget, 'cget'):
+                try:
+                    font_tuple = self.text_widget.cget("font")
+                    if isinstance(font_tuple, (list, tuple)) and len(font_tuple) >= 2:
+                        font_size = font_tuple[1]
+                except:
+                    pass
+            self.create_text(2, y, anchor="nw", text=linenum, fill=self.line_color, 
+                           font=(self.text_widget.cget("font")[0] if hasattr(self.text_widget, 'cget') else "Consolas", font_size))
             i = self.text_widget.index(f"{i}+1line")
 
 
@@ -552,6 +580,529 @@ def main():
     app = FSCodeIDE()
     app.run()
 
+# Enhanced FS Code IDE desktop application
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import tkinter as tk
+import tkinter.font as tkfont
+from tkinter import filedialog, messagebox, ttk
+
+
+class FSCodeIDE(tk.Tk):
+    """Feature-rich yet lightweight desktop IDE for Python scripts."""
+
+    THEMES = {
+        "dark": {
+            "bg": "#1e1e1e",
+            "panel": "#252526",
+            "fg": "#f5f5f5",
+            "accent": "#569cd6",
+            "output_bg": "#101010",
+        },
+        "light": {
+            "bg": "#f5f5f5",
+            "panel": "#ffffff",
+            "fg": "#1f1f1f",
+            "accent": "#0063b1",
+            "output_bg": "#f0f0f0",
+        },
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("FS-code IDE")
+        self.geometry("1100x700")
+        self.minsize(900, 600)
+
+        self.current_file: Path | None = None
+        self.is_dirty = False
+        self.theme = "dark"
+        self.process: subprocess.Popen | None = None
+        self.font_family = self._default_font()
+        self.font_size = tk.IntVar(value=14)
+        self.status_var = tk.StringVar(value="Ready")
+
+        self.style = ttk.Style(self)
+        self._create_styles()
+        self._create_menu()
+        self._create_toolbar()
+        self._create_layout()
+        self._bind_shortcuts()
+        self.apply_theme()
+        self.update_title()
+        # Initial line number redraw
+        if hasattr(self, 'line_numbers'):
+            self.line_numbers.redraw()
+
+    # ------------------------------------------------------------------ UI setup
+    def _create_styles(self) -> None:
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+        
+        # Configure sleek scrollbar styles
+        self._update_scrollbar_styles()
+    
+    def _update_scrollbar_styles(self) -> None:
+        """Update scrollbar styles to be sleek and modern"""
+        colors = self.THEMES[self.theme]
+        
+        # Scrollbar colors based on theme
+        if self.theme == "dark":
+            trough_color = "#2d2d30"
+            slider_color = "#424242"
+            slider_hover = "#4e4e4e"
+            arrow_color = "#858585"
+        else:
+            trough_color = "#e0e0e0"
+            slider_color = "#b0b0b0"
+            slider_hover = "#999999"
+            arrow_color = "#666666"
+        
+        # Vertical scrollbar style - sleek and modern
+        self.style.configure(
+            "Vertical.TScrollbar",
+            background=trough_color,
+            troughcolor=trough_color,
+            borderwidth=0,
+            arrowcolor=arrow_color,
+            darkcolor=slider_color,
+            lightcolor=slider_color,
+            width=10,  # Sleek thin scrollbar
+            relief=tk.FLAT,
+        )
+        self.style.map(
+            "Vertical.TScrollbar",
+            background=[("active", slider_hover), ("pressed", slider_hover), ("!active", slider_color)],
+        )
+        
+        # Horizontal scrollbar style - sleek and modern
+        self.style.configure(
+            "Horizontal.TScrollbar",
+            background=trough_color,
+            troughcolor=trough_color,
+            borderwidth=0,
+            arrowcolor=arrow_color,
+            darkcolor=slider_color,
+            lightcolor=slider_color,
+            width=10,  # Sleek thin scrollbar
+            relief=tk.FLAT,
+        )
+        self.style.map(
+            "Horizontal.TScrollbar",
+            background=[("active", slider_hover), ("pressed", slider_hover), ("!active", slider_color)],
+        )
+
+    def _create_menu(self) -> None:
+        menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="New", accelerator="Ctrl+N", command=self.new_file)
+        file_menu.add_command(label="Open…", accelerator="Ctrl+O", command=self.open_file)
+        file_menu.add_command(label="Save", accelerator="Ctrl+S", command=self.save_file)
+        file_menu.add_command(label="Save As…", accelerator="Ctrl+Shift+S", command=self.save_file_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        run_menu = tk.Menu(menubar, tearoff=0)
+        run_menu.add_command(label="Run", accelerator="F5", command=self.run_code)
+        run_menu.add_command(label="Stop", accelerator="F6", command=self.stop_code)
+        menubar.add_cascade(label="Run", menu=run_menu)
+
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_command(label="Toggle Theme", accelerator="Ctrl+T", command=self.toggle_theme)
+        menubar.add_cascade(label="View", menu=view_menu)
+
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="About", command=self.show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self.config(menu=menubar)
+
+    def _create_toolbar(self) -> None:
+        self.toolbar = ttk.Frame(self, padding=(10, 8))
+        self.toolbar.pack(fill=tk.X)
+
+        self.run_button = ttk.Button(self.toolbar, text="▶ Run", command=self.run_code)
+        self.run_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.stop_button = ttk.Button(self.toolbar, text="■ Stop", command=self.stop_code, state=tk.DISABLED)
+        self.stop_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(self.toolbar, text="Clear Output", command=self.clear_output).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(self.toolbar, text="Toggle Theme", command=self.toggle_theme).pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Label(self.toolbar, text="Font size").pack(side=tk.LEFT, padx=(12, 4))
+        self.font_size_box = tk.Spinbox(
+            self.toolbar,
+            from_=8,
+            to=32,
+            width=4,
+            textvariable=self.font_size,
+            command=self.update_font,
+        )
+        self.font_size_box.pack(side=tk.LEFT)
+        self.font_size.trace_add("write", lambda *_: self.update_font())
+
+        ttk.Label(self.toolbar, text="  ").pack(side=tk.LEFT, expand=True)
+
+    def _create_layout(self) -> None:
+        self.paned = ttk.Panedwindow(self, orient=tk.VERTICAL)
+        self.paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        # Editor panel
+        editor_frame = ttk.Frame(self.paned, padding=5)
+        editor_frame.columnconfigure(1, weight=1)
+        editor_frame.rowconfigure(0, weight=1)
+        
+        # Line numbers
+        self.line_numbers = LineNumbers(
+            editor_frame,
+            None,
+            width=50,
+            highlightthickness=0,
+            borderwidth=0
+        )
+        self.line_numbers.grid(row=0, column=0, sticky="ns")
+        
+        # Code editor with syntax highlighting
+        self.code_area = SyntaxHighlightedText(
+            editor_frame,
+            wrap=tk.NONE,
+            undo=True,
+            font=(self.font_family, self.font_size.get()),
+            borderwidth=0,
+            highlightthickness=0,
+            padx=10,
+            pady=10,
+            insertwidth=2,
+        )
+        self.code_area.grid(row=0, column=1, sticky="nsew")
+        
+        # Link line numbers to text widget
+        self.line_numbers.text_widget = self.code_area
+        
+        # Bind events
+        self.code_area.bind("<<Modified>>", self._on_modified)
+        self.code_area.bind("<KeyRelease>", self._on_code_change)
+        self.code_area.bind("<ButtonRelease>", self._on_code_change)
+        self.code_area.bind("<Return>", self._handle_return)
+        self.code_area.bind("<Configure>", lambda e: self.line_numbers.redraw())
+        self.code_area.bind("<MouseWheel>", lambda e: self.line_numbers.redraw())
+
+        self.code_scroll_y = AutoHideScrollbar(editor_frame, text_widget=self.code_area, command=self.code_area.yview, orient=tk.VERTICAL, style="Vertical.TScrollbar")
+        self.code_scroll_y.grid(row=0, column=2, sticky="ns")
+        self.code_area.configure(yscrollcommand=self.code_scroll_y.set)
+
+        self.code_scroll_x = AutoHideScrollbar(editor_frame, text_widget=self.code_area, command=self.code_area.xview, orient=tk.HORIZONTAL, style="Horizontal.TScrollbar")
+        self.code_scroll_x.grid(row=1, column=1, sticky="ew")
+        self.code_area.configure(xscrollcommand=self.code_scroll_x.set)
+
+        # Output panel
+        output_frame = ttk.Frame(self.paned, padding=5)
+        output_frame.columnconfigure(0, weight=1)
+        output_frame.rowconfigure(0, weight=1)
+
+        self.output_area = tk.Text(
+            output_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            borderwidth=0,
+            highlightthickness=0,
+            padx=10,
+            pady=10,
+            font=(self.font_family, 12),
+        )
+        self.output_area.grid(row=0, column=0, sticky="nsew")
+
+        self.output_scroll = AutoHideScrollbar(output_frame, text_widget=self.output_area, command=self.output_area.yview, orient=tk.VERTICAL, style="Vertical.TScrollbar")
+        self.output_scroll.grid(row=0, column=1, sticky="ns")
+        self.output_area.configure(yscrollcommand=self.output_scroll.set)
+
+        self.paned.add(editor_frame, weight=3)
+        self.paned.add(output_frame, weight=2)
+
+        # Status bar
+        status_bar = ttk.Frame(self, padding=(10, 4))
+        status_bar.pack(fill=tk.X)
+        ttk.Label(status_bar, textvariable=self.status_var, anchor="w").pack(fill=tk.X)
+
+    def _bind_shortcuts(self) -> None:
+        self.bind("<Control-n>", lambda event: self.new_file())
+        self.bind("<Control-o>", lambda event: self.open_file())
+        self.bind("<Control-s>", lambda event: self.save_file())
+        self.bind("<Control-S>", lambda event: self.save_file_as())
+        self.bind("<Control-t>", lambda event: self.toggle_theme())
+        self.bind("<F5>", lambda event: self.run_code())
+        self.bind("<F6>", lambda event: self.stop_code())
+
+    # ------------------------------------------------------------------ Command handlers
+    def new_file(self) -> None:
+        if not self._maybe_save_changes():
+            return
+        self.code_area.delete("1.0", tk.END)
+        self.current_file = None
+        self.is_dirty = False
+        self.update_title()
+        self.line_numbers.redraw()
+        self.append_output("New file ready.\n", replace=True)
+
+    def open_file(self) -> None:
+        if not self._maybe_save_changes():
+            return
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Python files", "*.py"), ("All files", "*.*")],
+            defaultextension=".py",
+        )
+        if not file_path:
+            return
+        try:
+            contents = Path(file_path).read_text(encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Open failed", str(exc))
+            return
+
+        self.code_area.delete("1.0", tk.END)
+        self.code_area.insert("1.0", contents)
+        self.current_file = Path(file_path)
+        self.is_dirty = False
+        self.update_title()
+        self.update_status_bar()
+        self.line_numbers.redraw()
+        self.append_output(f"Opened {self.current_file}\n", replace=True)
+
+    def save_file(self) -> bool:
+        if self.current_file is None:
+            return self.save_file_as()
+        return self._write_to_path(self.current_file)
+
+    def save_file_as(self) -> bool:
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".py",
+            filetypes=[("Python files", "*.py"), ("All files", "*.*")],
+        )
+        if not file_path:
+            return False
+        self.current_file = Path(file_path)
+        return self._write_to_path(self.current_file)
+
+    def clear_output(self) -> None:
+        self.append_output("", replace=True)
+        self.status_var.set("Output cleared.")
+
+    def run_code(self) -> None:
+        code = self.code_area.get("1.0", tk.END)
+        if not code.strip():
+            messagebox.showinfo("Run code", "Nothing to run. Please add some Python code first.")
+            return
+
+        self.stop_code()
+        self.append_output("▶ Running code...\n", replace=True)
+        self.status_var.set("Running...")
+        self.run_button.state(["disabled"])
+        self.stop_button.state(["!disabled"])
+
+        thread = threading.Thread(target=self._execute_code, args=(code,), daemon=True)
+        thread.start()
+
+    def stop_code(self) -> None:
+        if not self.process:
+            return
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            self.append_output("\n■ Execution stopped by user.\n")
+        self.process = None
+        self.run_button.state(["!disabled"])
+        self.stop_button.state(["disabled"])
+        self.status_var.set("Ready")
+
+    def toggle_theme(self) -> None:
+        self.theme = "light" if self.theme == "dark" else "dark"
+        self.apply_theme()
+
+    def update_font(self) -> None:
+        size = max(8, min(32, int(self.font_size.get())))
+        self.code_area.configure(font=(self.font_family, size))
+        self.line_numbers.redraw()
+
+    def show_about(self) -> None:
+        messagebox.showinfo(
+            "About FS-code",
+            "FS-code IDE\nA minimal desktop IDE for learning and quick experiments.",
+        )
+
+    # ------------------------------------------------------------------ Helpers
+    def _write_to_path(self, path: Path) -> bool:
+        try:
+            path.write_text(self.code_area.get("1.0", tk.END), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return False
+        self.is_dirty = False
+        self.update_title()
+        self.status_var.set(f"Saved to {path}")
+        return True
+
+    def _maybe_save_changes(self) -> bool:
+        if not self.is_dirty:
+            return True
+        response = messagebox.askyesnocancel(
+            "Unsaved changes",
+            "Do you want to save your current file before continuing?",
+        )
+        if response is None:
+            return False
+        if response:
+            return self.save_file()
+        return True
+
+    def _execute_code(self, code: str) -> None:
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-u", "-c", code],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.process = process
+            stdout, stderr = process.communicate()
+            returncode = process.returncode
+        except Exception as exc:  # pragma: no cover - GUI feedback only
+            self.after(0, lambda: self._finalize_run(error=str(exc)))
+            return
+
+        self.after(0, lambda: self._finalize_run(stdout, stderr, returncode))
+
+    def _finalize_run(self, stdout: str = "", stderr: str = "", returncode: int | None = None, error: str | None = None) -> None:
+        self.process = None
+        self.run_button.state(["!disabled"])
+        self.stop_button.state(["disabled"])
+
+        output = ""
+        if error:
+            output = f"Error: {error}\n"
+        else:
+            if stdout:
+                output += stdout
+            if stderr:
+                output += stderr
+            if not output:
+                output = "Process finished with no output.\n"
+        self.append_output(output)
+        status = "Finished" if not error and (returncode == 0) else "Completed with errors"
+        self.status_var.set(status)
+
+    def _on_modified(self, _event=None) -> None:
+        if self.code_area.edit_modified():
+            self.is_dirty = True
+            self.update_title()
+            self.update_status_bar()
+            self.code_area.edit_modified(False)
+
+    def _on_code_change(self, event=None) -> None:
+        """Handle code changes - update status bar and line numbers"""
+        self.update_status_bar()
+        self.line_numbers.redraw()
+        return None
+
+    def update_status_bar(self) -> None:
+        line, column = self.code_area.index(tk.INSERT).split(".")
+        file_name = self.current_file.name if self.current_file else "Untitled"
+        dirty = "*" if self.is_dirty else ""
+        self.status_var.set(f"{dirty}{file_name}  |  Line {line}, Col {int(column) + 1}")
+
+    def _handle_return(self, event) -> str:
+        """Insert a newline that preserves the current indentation."""
+        line_start = self.code_area.index("insert linestart")
+        current_line = self.code_area.get(line_start, "insert")
+        indent = ""
+        for char in current_line:
+            if char in (" ", "\t"):
+                indent += char
+            else:
+                break
+        suffix = indent
+        if current_line.rstrip().endswith(":"):
+            suffix += "    "
+        self.code_area.insert(tk.INSERT, f"\n{suffix}")
+        self.update_status_bar()
+        self.line_numbers.redraw()
+        return "break"
+
+    def append_output(self, text: str, replace: bool = False) -> None:
+        self.output_area.configure(state=tk.NORMAL)
+        if replace:
+            self.output_area.delete("1.0", tk.END)
+        self.output_area.insert(tk.END, text)
+        self.output_area.see(tk.END)
+        self.output_area.configure(state=tk.DISABLED)
+
+    def apply_theme(self) -> None:
+        colors = self.THEMES[self.theme]
+        self.configure(bg=colors["bg"])
+        # Note: ttk widgets (toolbar, paned) are configured via styles below
+
+        self.style.configure("TFrame", background=colors["panel"])
+        self.style.configure("TLabel", background=colors["panel"], foreground=colors["fg"])
+        self.style.configure("TButton", background=colors["panel"], foreground=colors["fg"])
+        self.style.configure("TPanedwindow", background=colors["bg"])
+        self.style.configure("TMenubutton", background=colors["panel"], foreground=colors["fg"])
+        
+        # Update scrollbar styles
+        self._update_scrollbar_styles()
+
+        text_config = {
+            "bg": colors["panel"],
+            "fg": colors["fg"],
+            "insertbackground": colors["accent"],
+            "selectbackground": colors["accent"],
+            "selectforeground": colors["bg"],
+        }
+        self.code_area.configure(**text_config)
+        self.output_area.configure(
+            bg=colors["output_bg"],
+            fg=colors["fg"],
+            insertbackground=colors["accent"],
+            selectbackground=colors["accent"],
+            selectforeground=colors["bg"],
+        )
+        
+        # Style line numbers
+        line_num_bg = colors["panel"] if self.theme == "dark" else "#e8e8e8"
+        line_num_fg = "#858585" if self.theme == "dark" else "#666666"
+        self.line_numbers.configure(bg=line_num_bg)
+        self.line_numbers.set_line_color(line_num_fg)
+        # Update line number colors by redrawing
+        self.line_numbers.redraw()
+        
+        self.update()
+
+    def update_title(self) -> None:
+        file_name = self.current_file.name if self.current_file else "Untitled"
+        star = "*" if self.is_dirty else ""
+        self.title(f"{star}{file_name} - FS-code IDE")
+
+    def _default_font(self) -> str:
+        candidates = ("JetBrains Mono", "Fira Code", "Consolas", "Menlo", "Courier New", "Courier")
+        available = {name.lower() for name in tkfont.families()}
+        for candidate in candidates:
+            if candidate.lower() in available:
+                return candidate
+        return "Courier"
+
+
+def main() -> None:
+    app = FSCodeIDE()
+    app.mainloop()
 
 if __name__ == "__main__":
     main()
