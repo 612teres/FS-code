@@ -10,69 +10,110 @@ class SyntaxHighlightedText(tk.Text):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
         
-        # Define syntax highlighting tags
-        self.tag_configure("keyword", foreground="#569CD6")
-        self.tag_configure("string", foreground="#CE9178")
-        self.tag_configure("comment", foreground="#6A9955")
-        self.tag_configure("function", foreground="#DCDCAA")
-        self.tag_configure("number", foreground="#B5CEA8")
-        self.tag_configure("builtin", foreground="#4EC9B0")
+        # Define syntax highlighting tags with vibrant colors
+        self.tag_configure("keyword", foreground="#569CD6")      # Blue - keywords
+        self.tag_configure("string", foreground="#CE9178")     # Orange - strings
+        self.tag_configure("comment", foreground="#6A9955")      # Green - comments
+        self.tag_configure("function", foreground="#DCDCAA")     # Yellow - function names
+        self.tag_configure("number", foreground="#B5CEA8")      # Light green - numbers
+        self.tag_configure("builtin", foreground="#4EC9B0")      # Cyan - built-ins
+        self.tag_configure("class", foreground="#4EC9B0")       # Cyan - class names
+        self.tag_configure("operator", foreground="#D4D4D4")      # Light gray - operators
+        self.tag_configure("decorator", foreground="#C586C0")   # Purple - decorators
         
-        # Bind key release to trigger highlighting
-        self.bind("<KeyRelease>", self._highlight_syntax)
-        self.bind("<Return>", self._highlight_syntax)
+        # Bind events to trigger highlighting
+        self.bind("<KeyRelease>", lambda e: self.after_idle(self._highlight_syntax))
+        self.bind("<ButtonRelease>", lambda e: self.after_idle(self._highlight_syntax))
+        self.bind("<<Modified>>", lambda e: self.after_idle(self._highlight_syntax))
         
     def _highlight_syntax(self, event=None):
-        """Apply syntax highlighting to the text"""
-        # Remove all tags
-        for tag in ["keyword", "string", "comment", "function", "number", "builtin"]:
+        """Apply comprehensive syntax highlighting to the text"""
+        # Remove all tags first
+        for tag in ["keyword", "string", "comment", "function", "number", "builtin", "class", "operator", "decorator"]:
             self.tag_remove(tag, "1.0", tk.END)
         
         code = self.get("1.0", tk.END)
+        if not code.strip():
+            return
         
-        # Keywords
-        keywords = r'\b(and|as|assert|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield)\b'
-        for match in re.finditer(keywords, code):
-            start = f"1.0 + {match.start()} chars"
-            end = f"1.0 + {match.end()} chars"
-            self.tag_add("keyword", start, end)
+        # Process line by line for better accuracy
+        lines = code.split('\n')
+        char_offset = 0
         
-        # Built-in functions
-        builtins = r'\b(print|len|range|str|int|float|list|dict|set|tuple|open|input|type|isinstance|enumerate|zip|map|filter|sum|max|min|abs|round)\b'
-        for match in re.finditer(builtins, code):
-            start = f"1.0 + {match.start()} chars"
-            end = f"1.0 + {match.end()} chars"
-            self.tag_add("builtin", start, end)
-        
-        # Strings (single and double quotes)
-        strings = r'(["\'])(?:(?=(\\?))\2.)*?\1'
-        for match in re.finditer(strings, code):
-            start = f"1.0 + {match.start()} chars"
-            end = f"1.0 + {match.end()} chars"
-            self.tag_add("string", start, end)
-        
-        # Comments
-        comments = r'#.*?$'
-        for match in re.finditer(comments, code, re.MULTILINE):
-            start = f"1.0 + {match.start()} chars"
-            end = f"1.0 + {match.end()} chars"
-            self.tag_add("comment", start, end)
-        
-        # Numbers
-        numbers = r'\b\d+\.?\d*\b'
-        for match in re.finditer(numbers, code):
-            start = f"1.0 + {match.start()} chars"
-            end = f"1.0 + {match.end()} chars"
-            self.tag_add("number", start, end)
-        
-        # Functions (def function_name)
-        functions = r'\bdef\s+(\w+)'
-        for match in re.finditer(functions, code):
-            start = f"1.0 + {match.start(1)} chars"
-            end = f"1.0 + {match.end(1)} chars"
-            self.tag_add("function", start, end)
-        
-        return "break"  # Prevent default handler
+        for line_num, line in enumerate(lines):
+            line_start = char_offset
+            line_end = char_offset + len(line)
+            
+            # Comments (must be first to avoid highlighting inside strings)
+            comment_match = re.search(r'#.*$', line)
+            if comment_match:
+                start_pos = line_start + comment_match.start()
+                end_pos = line_start + comment_match.end()
+                self.tag_add("comment", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            # Strings (single and double quotes, including triple quotes)
+            string_patterns = [
+                (r'""".*?"""', re.DOTALL),  # Triple double quotes
+                (r"'''.*?'''", re.DOTALL),  # Triple single quotes
+                (r'"[^"]*"', 0),            # Double quotes
+                (r"'[^']*'", 0),            # Single quotes
+            ]
+            for pattern, flags in string_patterns:
+                for match in re.finditer(pattern, line, flags):
+                    start_pos = line_start + match.start()
+                    end_pos = line_start + match.end()
+                    self.tag_add("string", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            # Decorators
+            decorator_match = re.search(r'@\w+', line)
+            if decorator_match:
+                start_pos = line_start + decorator_match.start()
+                end_pos = line_start + decorator_match.end()
+                self.tag_add("decorator", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            # Keywords (Python reserved words)
+            keywords = r'\b(and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield)\b'
+            for match in re.finditer(keywords, line):
+                start_pos = line_start + match.start()
+                end_pos = line_start + match.end()
+                self.tag_add("keyword", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            # Class definitions
+            class_match = re.search(r'\bclass\s+(\w+)', line)
+            if class_match:
+                start_pos = line_start + class_match.start(1)
+                end_pos = line_start + class_match.end(1)
+                self.tag_add("class", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            # Function definitions
+            func_match = re.search(r'\bdef\s+(\w+)', line)
+            if func_match:
+                start_pos = line_start + func_match.start(1)
+                end_pos = line_start + func_match.end(1)
+                self.tag_add("function", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            # Built-in functions and types
+            builtins = r'\b(print|len|range|str|int|float|bool|list|dict|set|tuple|open|input|type|isinstance|enumerate|zip|map|filter|sum|max|min|abs|round|sorted|reversed|iter|next|any|all|bin|hex|oct|ord|chr|repr|eval|exec|compile|hash|id|vars|dir|hasattr|getattr|setattr|delattr|isinstance|issubclass|super|property|staticmethod|classmethod)\b'
+            for match in re.finditer(builtins, line):
+                start_pos = line_start + match.start()
+                end_pos = line_start + match.end()
+                self.tag_add("builtin", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            # Numbers (integers, floats, hex, binary)
+            numbers = r'\b(0x[0-9a-fA-F]+|0b[01]+|\d+\.?\d*)\b'
+            for match in re.finditer(numbers, line):
+                start_pos = line_start + match.start()
+                end_pos = line_start + match.end()
+                self.tag_add("number", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            # Operators
+            operators = r'[+\-*/%=<>!&|^~]'
+            for match in re.finditer(operators, line):
+                start_pos = line_start + match.start()
+                end_pos = line_start + match.end()
+                self.tag_add("operator", f"1.0 + {start_pos} chars", f"1.0 + {end_pos} chars")
+            
+            char_offset = line_end + 1  # +1 for newline character
 
 
 class AutoHideScrollbar(ttk.Scrollbar):
@@ -869,6 +910,8 @@ class FSCodeIDE(tk.Tk):
 
         self.code_area.delete("1.0", tk.END)
         self.code_area.insert("1.0", contents)
+        # Trigger syntax highlighting after content is loaded
+        self.code_area.after_idle(self.code_area._highlight_syntax)
         self.current_file = Path(file_path)
         self.is_dirty = False
         self.update_title()
