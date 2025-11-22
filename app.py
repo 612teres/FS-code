@@ -116,6 +116,361 @@ class SyntaxHighlightedText(tk.Text):
             char_offset = line_end + 1  # +1 for newline character
 
 
+class Terminal(tk.Frame):
+    """Terminal widget for running shell commands with Linux support"""
+    
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.command_history = []
+        self.history_index = -1
+        self.current_directory = Path.cwd()
+        self.shell = self._detect_linux_shell()
+        self.is_windows = os.name == 'nt'
+        
+        # Create terminal header
+        header = tk.Frame(self, bg="#2d2d30", height=30)
+        header.pack(fill=tk.X)
+        tk.Label(header, text="Terminal", bg="#2d2d30", fg="#cccccc", 
+                font=("Segoe UI", 9, "bold"), anchor=tk.W, padx=10).pack(side=tk.LEFT, fill=tk.Y)
+        
+        # Terminal output area
+        output_frame = tk.Frame(self)
+        output_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.output = tk.Text(
+            output_frame,
+            wrap=tk.WORD,
+            bg="#1e1e1e",
+            fg="#cccccc",
+            font=("Consolas", 10),
+            borderwidth=0,
+            highlightthickness=0,
+            padx=10,
+            pady=10,
+            state=tk.DISABLED,
+        )
+        self.output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Scrollbar for terminal output
+        scrollbar = AutoHideScrollbar(output_frame, command=self.output.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.output.configure(yscrollcommand=scrollbar.set)
+        
+        # Command input area
+        input_frame = tk.Frame(self, bg="#252526", height=35)
+        input_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        
+        prompt_label = tk.Label(input_frame, text=">", bg="#252526", fg="#569cd6", 
+                font=("Consolas", 11, "bold"))
+        prompt_label.pack(side=tk.LEFT, padx=(10, 5))
+        
+        self.input_entry = tk.Entry(
+            input_frame,
+            bg="#1e1e1e",
+            fg="#cccccc",
+            insertbackground="#cccccc",
+            font=("Consolas", 10),
+            borderwidth=0,
+            relief=tk.FLAT,
+        )
+        self.input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10), pady=5)
+        self.input_entry.bind("<Return>", self._execute_command)
+        self.input_entry.bind("<Up>", self._history_up)
+        self.input_entry.bind("<Down>", self._history_down)
+        
+        # Show initial prompt
+        shell_info = f"Using: {self.shell['name']}" if self.shell else "Using: Default shell"
+        self._write_output(f"Terminal ready. Current directory: {self.current_directory}\n", "info")
+        self._write_output(f"{shell_info}\n", "info")
+        self._write_output("Type 'help' for available commands.\n\n", "info")
+        self._show_prompt()
+    
+    def _detect_linux_shell(self):
+        """Detect available Linux-compatible shell on Windows"""
+        if os.name != 'nt':
+            # Already on Linux/Unix
+            return {'name': 'bash', 'command': ['bash', '-c'], 'available': True}
+        
+        # Check for WSL
+        try:
+            result = subprocess.run(['wsl', '--list', '--quiet'], 
+                                  capture_output=True, timeout=2)
+            if result.returncode == 0:
+                return {'name': 'WSL', 'command': ['wsl'], 'available': True}
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        
+        # Check for Git Bash
+        git_bash_paths = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+        ]
+        for path in git_bash_paths:
+            if os.path.exists(path):
+                return {'name': 'Git Bash', 'command': [path], 'available': True}
+        
+        # Check for MSYS2
+        msys2_paths = [
+            r"C:\msys64\usr\bin\bash.exe",
+            r"C:\msys32\usr\bin\bash.exe",
+        ]
+        for path in msys2_paths:
+            if os.path.exists(path):
+                return {'name': 'MSYS2', 'command': [path], 'available': True}
+        
+        # No Linux shell found, will use command mapping
+        return {'name': 'Windows CMD (with Linux command mapping)', 'command': None, 'available': False}
+    
+    def _write_output(self, text, tag="normal"):
+        """Write text to terminal output"""
+        self.output.configure(state=tk.NORMAL)
+        self.output.insert(tk.END, text, tag)
+        self.output.see(tk.END)
+        self.output.configure(state=tk.DISABLED)
+    
+    def _show_prompt(self):
+        """Show command prompt"""
+        prompt = f"{self.current_directory}> "
+        self._write_output(prompt, "prompt")
+    
+    def _execute_command(self, event=None):
+        """Execute the entered command"""
+        command = self.input_entry.get().strip()
+        if not command:
+            return
+        
+        # Add to history
+        if command and (not self.command_history or self.command_history[-1] != command):
+            self.command_history.append(command)
+        self.history_index = len(self.command_history)
+        
+        # Display command
+        self._write_output(f"{command}\n", "command")
+        
+        # Clear input
+        self.input_entry.delete(0, tk.END)
+        
+        # Handle special commands
+        if command.lower() == "help":
+            self._show_help()
+        elif command.lower() == "clear" or command.lower() == "cls":
+            self.output.configure(state=tk.NORMAL)
+            self.output.delete("1.0", tk.END)
+            self.output.configure(state=tk.DISABLED)
+            self._show_prompt()
+        elif command.startswith("cd "):
+            self._change_directory(command[3:].strip())
+        else:
+            # Execute system command
+            self._run_command(command)
+    
+    def _map_linux_command(self, command):
+        """Map Linux commands to Windows equivalents if no Linux shell is available"""
+        if self.shell and self.shell['available']:
+            return command  # Use Linux shell directly
+        
+        # Command mapping for Windows
+        cmd_parts = command.split()
+        if not cmd_parts:
+            return command
+        
+        cmd = cmd_parts[0].lower()
+        args = ' '.join(cmd_parts[1:]) if len(cmd_parts) > 1 else ''
+        
+        # Map common Linux commands to Windows
+        command_map = {
+            'ls': f'dir /b {args}' if args else 'dir /b',
+            'll': f'dir {args}' if args else 'dir',
+            'pwd': 'cd',
+            'cat': f'type {args}' if args else 'type',
+            'grep': f'findstr {args}' if args else 'findstr',
+            'which': f'where {args}' if args else 'where',
+            'rm': f'del {args}' if args else 'del',
+            'rmdir': f'rmdir {args}' if args else 'rmdir',
+            'mv': f'move {args}' if args else 'move',
+            'cp': f'copy {args}' if args else 'copy',
+            'touch': f'type nul > {args}' if args else 'type nul',
+            'clear': 'cls',
+        }
+        
+        if cmd in command_map:
+            return command_map[cmd]
+        return command
+    
+    def _convert_windows_path_to_wsl(self, path):
+        """Convert Windows path to WSL path format"""
+        # Convert C:\Users\Admin\Documents to /mnt/c/Users/Admin/Documents
+        path_str = str(path).replace('\\', '/')
+        if ':' in path_str:
+            drive_letter = path_str[0].lower()
+            path_str = path_str[2:]  # Remove C:
+            return f"/mnt/{drive_letter}{path_str}"
+        return path_str
+    
+    def _run_command(self, command):
+        """Run a system command with Linux support"""
+        try:
+            # Use Linux shell if available
+            if self.shell and self.shell['available']:
+                if self.shell['name'] == 'WSL':
+                    # Convert Windows path to WSL path
+                    wsl_path = self._convert_windows_path_to_wsl(self.current_directory)
+                    # Escape the command properly for bash
+                    # Replace single quotes with '\'' and wrap the whole thing
+                    escaped_command = command.replace("'", "'\\''")
+                    # Build the full bash command with cd
+                    bash_cmd = f"cd '{wsl_path}' && {escaped_command}"
+                    full_command = ['wsl', 'bash', '-c', bash_cmd]
+                elif 'bash' in self.shell['name'].lower():
+                    # Git Bash or MSYS2 - convert Windows path
+                    bash_path = str(self.current_directory).replace('\\', '/')
+                    # Git Bash uses /c/Users format, MSYS2 uses /c/Users
+                    if 'C:' in bash_path or 'c:' in bash_path:
+                        bash_path = bash_path.replace('C:', '/c').replace('c:', '/c')
+                    elif 'D:' in bash_path or 'd:' in bash_path:
+                        bash_path = bash_path.replace('D:', '/d').replace('d:', '/d')
+                    full_command = self.shell['command'] + ['-c', 
+                        f"cd '{bash_path}' && {command}"]
+                else:
+                    full_command = command
+                    shell = True
+                
+                # Execute with Linux shell
+                process = subprocess.Popen(
+                    full_command,
+                    shell=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                )
+            else:
+                # Map Linux commands if needed (no Linux shell available)
+                if self.is_windows:
+                    command = self._map_linux_command(command)
+                
+                # Execute with Windows shell
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    cwd=str(self.current_directory),
+                    encoding='utf-8',
+                    errors='replace',
+                )
+            
+            stdout, stderr = process.communicate(timeout=30)
+            
+            if stdout:
+                self._write_output(stdout, "output")
+            if stderr:
+                # Only show stderr if it's not empty and not just a warning
+                if stderr.strip() and not stderr.strip().startswith('W'):
+                    self._write_output(stderr, "error")
+            
+            if process.returncode != 0 and stderr.strip():
+                # Only show error if there's actual error output
+                if not stderr.strip().startswith('W'):
+                    self._write_output(f"Command failed with exit code: {process.returncode}\n", "error")
+        except subprocess.TimeoutExpired:
+            if 'process' in locals():
+                process.kill()
+            self._write_output("Command timed out after 30 seconds.\n", "error")
+        except Exception as e:
+            self._write_output(f"Error: {str(e)}\n", "error")
+        
+        self._show_prompt()
+    
+    def _change_directory(self, path):
+        """Change the current directory"""
+        try:
+            if not path:
+                path = str(Path.home())
+            new_path = Path(self.current_directory) / path
+            if new_path.exists() and new_path.is_dir():
+                self.current_directory = new_path.resolve()
+                self._write_output(f"Changed directory to: {self.current_directory}\n", "info")
+            else:
+                self._write_output(f"Directory not found: {path}\n", "error")
+        except Exception as e:
+            self._write_output(f"Error changing directory: {str(e)}\n", "error")
+        self._show_prompt()
+    
+    def _show_help(self):
+        """Show help message"""
+        shell_note = ""
+        if self.shell and self.shell['available']:
+            shell_note = f"\nNote: Using {self.shell['name']} - Linux commands are supported!\n"
+        elif self.is_windows:
+            shell_note = "\nNote: Linux commands will be automatically mapped to Windows equivalents.\n"
+        
+        help_text = f"""
+Available commands:
+  help              - Show this help message
+  clear / cls       - Clear terminal output
+  cd <path>         - Change directory
+  <command>         - Execute any system command
+{shell_note}
+Linux Commands (auto-mapped on Windows if no Linux shell):
+  ls, ll            - List directory
+  pwd               - Print working directory
+  cat <file>        - Display file contents
+  grep <pattern>    - Search for pattern
+  which <cmd>       - Find command location
+  rm <file>         - Remove file
+  mv <src> <dst>    - Move/rename file
+  cp <src> <dst>    - Copy file
+  touch <file>      - Create empty file
+
+Examples:
+  cd Documents      - Change to Documents folder
+  ls                - List directory (Linux-style)
+  dir               - List directory (Windows)
+  python --version  - Check Python version
+  pip list          - List installed packages
+  cat app.py        - View file contents
+"""
+        self._write_output(help_text, "info")
+        self._show_prompt()
+    
+    def _history_up(self, event):
+        """Navigate command history up"""
+        if self.command_history and self.history_index > 0:
+            self.history_index -= 1
+            self.input_entry.delete(0, tk.END)
+            self.input_entry.insert(0, self.command_history[self.history_index])
+        return "break"
+    
+    def _history_down(self, event):
+        """Navigate command history down"""
+        if self.command_history:
+            if self.history_index < len(self.command_history) - 1:
+                self.history_index += 1
+                self.input_entry.delete(0, tk.END)
+                self.input_entry.insert(0, self.command_history[self.history_index])
+            else:
+                self.history_index = len(self.command_history)
+                self.input_entry.delete(0, tk.END)
+        return "break"
+    
+    def apply_theme(self, colors):
+        """Apply theme colors to terminal"""
+        self.output.configure(bg=colors["bg"], fg=colors["fg"])
+        self.input_entry.configure(bg=colors["panel"], fg=colors["fg"], insertbackground=colors["accent"])
+        
+        # Configure text tags
+        self.output.tag_configure("normal", foreground=colors["fg"])
+        self.output.tag_configure("command", foreground=colors["accent"])
+        self.output.tag_configure("output", foreground=colors["fg"])
+        self.output.tag_configure("error", foreground="#f48771")
+        self.output.tag_configure("info", foreground="#4ec9b0")
+        self.output.tag_configure("prompt", foreground=colors["accent"])
+
+
 class AutoHideScrollbar(ttk.Scrollbar):
     """Completely hidden scrollbar - still functional but invisible"""
     
@@ -665,6 +1020,8 @@ class FSCodeIDE(tk.Tk):
         self.font_family = self._default_font()
         self.font_size = tk.IntVar(value=14)
         self.status_var = tk.StringVar(value="Ready")
+        self.terminal_visible = False
+        self.terminal_visible = False
 
         self.style = ttk.Style(self)
         self._create_styles()
@@ -776,6 +1133,7 @@ class FSCodeIDE(tk.Tk):
         self.stop_button.pack(side=tk.LEFT, padx=(0, 6))
 
         ttk.Button(self.toolbar, text="Clear Output", command=self.clear_output).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(self.toolbar, text="Terminal", command=self.toggle_terminal).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(self.toolbar, text="Toggle Theme", command=self.toggle_theme).pack(side=tk.LEFT, padx=(0, 6))
 
         ttk.Label(self.toolbar, text="Font size").pack(side=tk.LEFT, padx=(12, 4))
@@ -793,7 +1151,28 @@ class FSCodeIDE(tk.Tk):
         ttk.Label(self.toolbar, text="  ").pack(side=tk.LEFT, expand=True)
 
     def _create_layout(self) -> None:
-        self.paned = ttk.Panedwindow(self, orient=tk.VERTICAL)
+        # Main container with horizontal paned window for terminal sidebar
+        self.main_container = ttk.Frame(self)
+        self.main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Horizontal paned window for terminal sidebar
+        self.horizontal_paned = ttk.Panedwindow(self.main_container, orient=tk.HORIZONTAL)
+        self.horizontal_paned.pack(fill=tk.BOTH, expand=True)
+        
+        # Terminal sidebar (initially hidden)
+        self.terminal_frame = ttk.Frame(self.horizontal_paned, width=350)
+        self.terminal = Terminal(self.terminal_frame)
+        self.terminal.pack(fill=tk.BOTH, expand=True)
+        self.terminal_frame.pack_propagate(False)
+        
+        # Main content area
+        self.content_frame = ttk.Frame(self.horizontal_paned)
+        
+        # Add content frame to paned window first (terminal hidden initially)
+        self.horizontal_paned.add(self.content_frame, weight=1)
+        
+        # Vertical paned window for editor and output
+        self.paned = ttk.Panedwindow(self.content_frame, orient=tk.VERTICAL)
         self.paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
         # Editor panel
@@ -879,6 +1258,7 @@ class FSCodeIDE(tk.Tk):
         self.bind("<Control-s>", lambda event: self.save_file())
         self.bind("<Control-S>", lambda event: self.save_file_as())
         self.bind("<Control-t>", lambda event: self.toggle_theme())
+        self.bind("<Control-backslash>", lambda event: self.toggle_terminal())  # Ctrl+` for terminal
         self.bind("<F5>", lambda event: self.run_code())
         self.bind("<F6>", lambda event: self.stop_code())
 
@@ -971,6 +1351,42 @@ class FSCodeIDE(tk.Tk):
     def toggle_theme(self) -> None:
         self.theme = "light" if self.theme == "dark" else "dark"
         self.apply_theme()
+    
+    def toggle_terminal(self) -> None:
+        """Toggle terminal sidebar visibility"""
+        # Get current panes
+        try:
+            panes = list(self.horizontal_paned.panes())
+        except:
+            panes = []
+        
+        terminal_in_panes = self.terminal_frame in panes
+        content_in_panes = self.content_frame in panes
+        
+        if self.terminal_visible and terminal_in_panes:
+            # Hide terminal
+            try:
+                self.horizontal_paned.forget(self.terminal_frame)
+            except tk.TclError:
+                pass
+            self.terminal_visible = False
+        elif not self.terminal_visible and not terminal_in_panes:
+            # Show terminal - need to reorder panes
+            try:
+                # Remove content frame if it's in panes
+                if content_in_panes:
+                    self.horizontal_paned.forget(self.content_frame)
+                # Add terminal first, then content
+                self.horizontal_paned.add(self.terminal_frame, weight=0)
+                if content_in_panes:
+                    self.horizontal_paned.add(self.content_frame, weight=1)
+            except tk.TclError as e:
+                # If there's an error, try simpler approach
+                try:
+                    self.horizontal_paned.add(self.terminal_frame, weight=0)
+                except:
+                    pass
+            self.terminal_visible = True
 
     def update_font(self) -> None:
         size = max(8, min(32, int(self.font_size.get())))
@@ -1126,6 +1542,10 @@ class FSCodeIDE(tk.Tk):
         self.line_numbers.set_line_color(line_num_fg)
         # Update line number colors by redrawing
         self.line_numbers.redraw()
+        
+        # Apply theme to terminal
+        if hasattr(self, 'terminal'):
+            self.terminal.apply_theme(colors)
         
         self.update()
 
