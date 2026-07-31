@@ -57,7 +57,7 @@ You can adjust the PyInstaller flags (icon, splash screen, signing) to match you
 ├─────────────────────────────────────────────────────┤
 │  File  Edit  Run  Help                              │
 ├─────────────────────────────────────────────────────┤
-│ [📄 New] [📁 Open] [💾 Save] │ [▶ Run] [🗑️ Clear]   │
+│ [New] [Open] [Save] │ [Run] [Clear]   │
 ├─────────────────────────────────────────────────────┤
 │ [Untitled] [script.py] [*test.py]  ← Tabs          │
 ├───┬─────────────────────────────────────────────────┤
